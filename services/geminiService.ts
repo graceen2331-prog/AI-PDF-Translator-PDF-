@@ -1,14 +1,15 @@
-// services/geminiService.ts (实际上换成了 DeepSeek)
+// services/geminiService.ts
 
-export const streamGeminiResponse = async (
-  prompt: string,
-  onChunk: (chunk: string) => void
-) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY; // 这里我们在 Vercel 里填 DeepSeek 的 Key 即可
+export const translateTextWithGemini = async (text: string, prompt?: string) => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
   
   if (!apiKey) {
-    throw new Error("API Key not found");
+    console.error("API Key is missing!"); 
+    throw new Error("API Key is missing");
   }
+
+  // 这里的 prompt 可以根据需要调整
+  const systemPrompt = "You are a professional translator. Translate the following text into Simplified Chinese. Maintain the original formatting and tone.";
 
   try {
     const response = await fetch("https://api.deepseek.com/chat/completions", {
@@ -18,55 +19,25 @@ export const streamGeminiResponse = async (
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "deepseek-chat", // DeepSeek V3 模型
+        model: "deepseek-chat", 
         messages: [
-          {
-            role: "system",
-            content: "You are an expert frontend developer. You generate complete, runnable HTML/JS code using Tailwind CSS. Do not include markdown backticks (```). Just output the raw code. Ensure the code works in a standalone environment."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text }
         ],
-        stream: true, // 开启流式输出
+        stream: false
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`DeepSeek API Error: ${response.statusText}`);
+      const errorData = await response.json();
+      throw new Error(`DeepSeek API Error: ${errorData.error?.message || response.statusText}`);
     }
 
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
+    const data = await response.json();
+    return data.choices[0].message.content;
 
-    if (!reader) throw new Error("No reader available");
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n");
-      
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const data = line.slice(6);
-          if (data === "[DONE]") break;
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices[0]?.delta?.content || "";
-            if (content) {
-              onChunk(content);
-            }
-          } catch (e) {
-            console.error("Error parsing stream:", e);
-          }
-        }
-      }
-    }
   } catch (error) {
-    console.error("DeepSeek Request Failed:", error);
+    console.error("Translation Failed:", error);
     throw error;
   }
 };
