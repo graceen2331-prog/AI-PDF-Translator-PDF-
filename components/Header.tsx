@@ -14,7 +14,7 @@ const Header: React.FC = () => {
         
         <div className="flex items-center gap-4">
           <span className="text-xs font-medium px-2 py-1 bg-brand-50 text-brand-700 rounded border border-brand-100">
-            Gemini 3 Flash
+            DeepSeek R1
           </span>
         </div>
       </div>
