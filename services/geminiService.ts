@@ -1,43 +1,31 @@
-// services/geminiService.ts
+// services/translationService.ts
+// Calls the backend proxy to protect API keys
 
-export const translateTextWithGemini = async (text: string, prompt?: string) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
-  
-  if (!apiKey) {
-    console.error("API Key is missing!"); 
-    throw new Error("API Key is missing");
-  }
-
-  // 这里的 prompt 可以根据需要调整
-  const systemPrompt = "You are a professional translator. Translate the following text into Simplified Chinese. Maintain the original formatting and tone.";
-
+export const translateText = async (text: string, systemPrompt?: string): Promise<string> => {
   try {
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
+    const response = await fetch('/api/translate', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: "deepseek-chat", 
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: text }
-        ],
-        stream: false
+        text,
+        systemPrompt,
       }),
     });
 
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(`DeepSeek API Error: ${errorData.error?.message || response.statusText}`);
+      throw new Error(errorData.error || 'Translation failed');
     }
 
     const data = await response.json();
-    return data.choices[0].message.content;
-
+    return data.translatedText;
   } catch (error) {
-    console.error("Translation Failed:", error);
+    console.error('Translation Failed:', error);
     throw error;
   }
 };
+
+// Legacy export name for backward compatibility
+export const translateTextWithGemini = translateText;
