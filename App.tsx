@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { FileUp, FileText, CheckCircle, AlertCircle, Download, Printer, RefreshCw, X } from 'lucide-react';
 import { extractTextFromPdf } from './services/pdfUtils';
 import { translateTextWithGemini } from './services/geminiService';
-import { TranslationPage } from './types';
+import { TranslationPage, MAX_FILE_SIZE, MAX_RETRY_ATTEMPTS, RETRY_DELAY_MS } from './types';
 import Header from './components/Header';
 import FileUpload from './components/FileUpload';
 import TranslationViewer from './components/TranslationViewer';
@@ -14,7 +14,54 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [pages, setPages] = useState<TranslationPage[]>([]);
 
+  // Retry a failed page translation with exponential backoff
+  const retryPageTranslation = useCallback(async (pageId: number) => {
+    setPages(prev => prev.map(p => 
+      p.id === pageId ? { ...p, status: 'processing', retryCount: (p.retryCount || 0) + 1 } : p
+    ));
+
+    const page = pages.find(p => p.id === pageId);
+    if (!page || !page.originalText.trim()) return;
+
+    try {
+      for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+        try {
+          const translated = await translateTextWithGemini(page.originalText);
+          setPages(prev => prev.map(p => 
+            p.id === pageId 
+              ? { ...p, translatedText: translated, status: 'completed', errorMessage: undefined } 
+              : p
+          ));
+          return; // Success
+        } catch (err) {
+          if (attempt < MAX_RETRY_ATTEMPTS - 1) {
+            // Exponential backoff: 1s, 2s, 4s
+            const delay = RETRY_DELAY_MS * Math.pow(2, attempt);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          } else {
+            throw err; // Last attempt failed
+          }
+        }
+      }
+    } catch (err: any) {
+      const errorMsg = err.message || 'Failed to translate this page';
+      console.error(`Error retrying page ${pageId}:`, err);
+      setPages(prev => prev.map(p => 
+        p.id === pageId 
+          ? { ...p, status: 'error', errorMessage: errorMsg } 
+          : p
+      ));
+    }
+  }, [pages]);
+
   const handleFileSelect = useCallback(async (selectedFile: File) => {
+    // File size validation
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      const maxSizeMB = Math.round(MAX_FILE_SIZE / 1024 / 1024);
+      setError(`File size exceeds ${maxSizeMB}MB limit. Please upload a smaller file.`);
+      return;
+    }
+
     setFile(selectedFile);
     setError(null);
     setIsProcessing(true);
@@ -29,7 +76,8 @@ const App: React.FC = () => {
         id: index + 1,
         originalText: text,
         translatedText: '',
-        status: 'pending'
+        status: 'pending',
+        retryCount: 0
       }));
       setPages(initialPages);
 
@@ -38,19 +86,47 @@ const App: React.FC = () => {
       for (let i = 0; i < initialPages.length; i++) {
         const page = initialPages[i];
         
+        // Skip empty pages
+        if (!page.originalText || page.originalText.trim().length === 0) {
+          setPages(prev => prev.map(p => 
+            p.id === page.id ? { ...p, status: 'completed' } : p
+          ));
+          setProgress(Math.round(((i + 1) / initialPages.length) * 100));
+          continue;
+        }
+        
         // Update status to processing
         setPages(prev => prev.map(p => p.id === page.id ? { ...p, status: 'processing' } : p));
         
-        try {
-          const translated = await translateTextWithGemini(page.originalText);
-          
+        // Try translation with automatic retry
+        let translated: string | null = null;
+        let lastError: Error | null = null;
+        
+        for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+          try {
+            translated = await translateTextWithGemini(page.originalText);
+            lastError = null;
+            break; // Success
+          } catch (err) {
+            lastError = err as Error;
+            if (attempt < MAX_RETRY_ATTEMPTS - 1) {
+              // Exponential backoff
+              const delay = RETRY_DELAY_MS * Math.pow(2, attempt);
+              console.log(`Retrying page ${page.id} in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS})`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+        }
+        
+        if (translated) {
           setPages(prev => prev.map(p => 
             p.id === page.id ? { ...p, translatedText: translated, status: 'completed' } : p
           ));
-        } catch (err) {
-          console.error(`Error translating page ${page.id}:`, err);
+        } else {
+          const errorMsg = lastError?.message || 'Unknown error';
+          console.error(`Error translating page ${page.id}:`, lastError);
           setPages(prev => prev.map(p => 
-            p.id === page.id ? { ...p, status: 'error' } : p
+            p.id === page.id ? { ...p, status: 'error', errorMessage: errorMsg } : p
           ));
         }
         
@@ -162,7 +238,7 @@ const App: React.FC = () => {
 
         {/* Translation Result View */}
         {file && pages.length > 0 && (
-          <TranslationViewer pages={pages} />
+          <TranslationViewer pages={pages} onRetry={retryPageTranslation} />
         )}
       </main>
     </div>
